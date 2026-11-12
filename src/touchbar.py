@@ -233,7 +233,7 @@ class Bar:
         self.pos = tuple(self.state.get("pos") or (0, 0))
         self.items = []
         self.sig = None
-        self.visible = True
+        self.visible = False          # 建好还没上屏; show() 才置 True
         self._closed = False
 
         self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
