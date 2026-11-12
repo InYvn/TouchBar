@@ -213,6 +213,7 @@ class Bar:
         self.items = []
         self.sig = None
         self.visible = True
+        self._closed = False
 
         self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, 480, BAR_H),
@@ -223,6 +224,7 @@ class Bar:
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setHasShadow_(True)
         self.panel.setCollectionBehavior_(1 | 256)
+        self.panel.setReleasedWhenClosed_(False)   # 关窗后别把对象释放掉, 免得代理悬空
         self.panel.setAlphaValue_(self.opacity)
         self.view = BarView.alloc().initWithFrame_(NSMakeRect(0, 0, 480, BAR_H))
         self.view.bar = self
@@ -265,16 +267,20 @@ class Bar:
         self.hide() if self.visible else self.show()
 
     def close(self):
+        self._closed = True
         try:
             self.timer.invalidate()
         except Exception:
             pass
-        self.panel.orderOut_(None)
-        self.panel.close()
+        try:
+            self.panel.orderOut_(None)
+            self.panel.close()
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- 刷新
     def tick_(self, _t):
-        if self.docked or not self.visible:
+        if self._closed or self.docked or not self.visible:
             return
         app, items = front_toolbar()
         sig = (app.localizedName() if app else "", tuple((i[0], i[1]) for i in items))
@@ -362,6 +368,8 @@ class Bar:
         self.panel.orderFrontRegardless()
 
     def rebuild(self, app, items):
+        if self._closed:
+            return
         for v in list(self.view.subviews()):
             v.removeFromSuperview()
         self.items = items
