@@ -13,6 +13,8 @@
 import json
 import os
 
+import objc
+
 import ApplicationServices as AS
 from AppKit import (
     NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered,
@@ -173,33 +175,52 @@ def sys_key(action):
     osa("set volume output volume %d" % max(0, min(100, vol + (6 if action == "vol+" else -6))))
 
 
-class PassThrough(NSImageView):
-    """只画图标，不参与命中测试 —— 让父视图拿到拖动事件。"""
+# 插件会被重复 import（卸载重装 / 升级），PyObjC 不允许同名 ObjC 类二次定义，
+# 所以先查运行时里有没有，有就直接复用。
+def _objc_class(name, factory):
+    try:
+        return objc.lookUpClass(name)
+    except Exception:
+        return factory()
 
-    def hitTest_(self, point):
-        return None
+
+def _make_pass_through():
+    class TouchBarPassThrough(NSImageView):
+        """只画图标，不参与命中测试 —— 让父视图拿到拖动事件。"""
+
+        def hitTest_(self, point):
+            return None
+
+    return TouchBarPassThrough
 
 
-class BarView(NSView):
-    """空白处可拖动；松手后由 Bar 决定是否吸附。"""
+def _make_bar_view():
+    class TouchBarBarView(NSView):
+        """空白处可拖动；松手后由 Bar 决定是否吸附。"""
 
-    def acceptsFirstMouse_(self, event):
-        return True
+        def acceptsFirstMouse_(self, event):
+            return True
 
-    def mouseDown_(self, event):
-        self._origin = NSEvent.mouseLocation()
-        self._frame = self.window().frame().origin
+        def mouseDown_(self, event):
+            self._origin = NSEvent.mouseLocation()
+            self._frame = self.window().frame().origin
 
-    def mouseDragged_(self, event):
-        if not getattr(self, "_origin", None):
-            return
-        p = NSEvent.mouseLocation()
-        self.window().setFrameOrigin_((self._frame.x + p.x - self._origin.x,
-                                       self._frame.y + p.y - self._origin.y))
+        def mouseDragged_(self, event):
+            if not getattr(self, "_origin", None):
+                return
+            p = NSEvent.mouseLocation()
+            self.window().setFrameOrigin_((self._frame.x + p.x - self._origin.x,
+                                           self._frame.y + p.y - self._origin.y))
 
-    def mouseUp_(self, event):
-        self._origin = None
-        self.bar.snap_or_save()
+        def mouseUp_(self, event):
+            self._origin = None
+            self.bar.snap_or_save()
+
+    return TouchBarBarView
+
+
+PassThrough = _objc_class("TouchBarPassThrough", _make_pass_through)
+BarView = _objc_class("TouchBarBarView", _make_bar_view)
 
 
 class Bar:

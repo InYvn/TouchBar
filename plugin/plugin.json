@@ -2,7 +2,7 @@
   "id": "touchbar",
   "name": "浮动工具栏（TouchBar）",
   "blurb": "跟随前台 App 的浮动工具栏：按钮来自它自己的工具栏，点按即执行；可拖动、吸附侧边、调透明度。",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "min_host": "2.1.0",
   "api": 1,
   "entry": "touchbar_plugin",
