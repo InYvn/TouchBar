@@ -388,7 +388,7 @@ class Bar:
         if not items:
             lab = NSTextField.labelWithString_("%s · 无工具栏" % (app.localizedName() if app else ""))
             lab.setFrame_(NSMakeRect(x, (BAR_H - 20) / 2, 190, 20))
-            lab.setTextColor_(NSColor.secondaryLabelColor())
+            lab.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.82))
             lab.setFont_(NSFont.systemFontOfSize_(12.0))
             self.view.addSubview_(lab)
             x += 200

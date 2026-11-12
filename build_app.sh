@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 VENV=.venv
 APP_NAME="TouchBar"
-VER="0.1.0"
+VER="0.1.1"
 BUNDLE_ID="io.github.inyvn.touchbar"
 OUT="dist-pyi"
 
