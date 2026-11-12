@@ -10,9 +10,11 @@ macOS 的 Touch Bar 硬件已经停产，但「工具条跟着当前 App 变」�
 
 ## 它长什么样
 
-```
-⠿  [App 图标] | ← → | 图标 列表 分栏 画廊 | 群组 共享 标签 操作 | 🔍 || 🔊- 🔊+ 🔇 | ◐ ⧉
-```
+![TouchBar](docs/screenshots/bar.png)
+
+收纳到侧边后是一条细标签，点它展开：
+
+![收纳](docs/screenshots/docked.png)
 
 - 左边是拖动把手和前台 App 的图标
 - 中间是它自己的工具栏按钮，按原分组画分隔线
