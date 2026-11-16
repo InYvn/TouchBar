@@ -146,6 +146,145 @@ def screen_under_mouse():
     return NSScreen.mainScreen()
 
 
+# ---------------------------------------------------------------- 跨屏轮转
+# 坐标系统注意: AXPosition 的原点在主屏左上角、y 向下; NSScreen.frame() 是左下原点、y 向上。
+# 两者互换用的是同一个公式 (y' = 主屏高 - y - 窗口高)。
+
+def _ax_get(el, name):
+    err, val = AS.AXUIElementCopyAttributeValue(el, name, None)
+    return val if err == 0 else None
+
+
+def _ax_set(el, name, value):
+    try:
+        return AS.AXUIElementSetAttributeValue(el, name, value)
+    except Exception:
+        return -1
+
+
+def primary_height():
+    screens = NSScreen.screens()
+    return float(screens[0].frame().size.height) if screens else 0.0
+
+
+def ax_to_ns_origin(x, y, h, main_h):
+    return (x, main_h - y - h)
+
+
+def ns_to_ax_origin(x, y, h, main_h):
+    return (x, main_h - y - h)
+
+
+def screen_targets():
+    """去重后的屏幕，按物理排列（先左右、同列再上下）。镜像屏只算一个目标。"""
+    seen = {}
+    for s in NSScreen.screens():
+        f = s.frame()
+        key = (round(f.origin.x), round(f.origin.y),
+               round(f.size.width), round(f.size.height))
+        if key not in seen:
+            seen[key] = s
+    return sorted(seen.values(),
+                  key=lambda s: (round(s.frame().origin.x), -round(s.frame().origin.y)))
+
+
+def screen_of_rect(rect, screens=None):
+    """窗口中心落在哪块屏；中心不在任何屏上就取重叠面积最大的那块。"""
+    screens = screens or screen_targets()
+    if not screens:
+        return None
+    x, y, w, h = rect
+    cx, cy = x + w / 2.0, y + h / 2.0
+    for s in screens:
+        f = s.frame()
+        if (f.origin.x <= cx <= f.origin.x + f.size.width
+                and f.origin.y <= cy <= f.origin.y + f.size.height):
+            return s
+    best, best_area = None, 0.0
+    for s in screens:
+        f = s.frame()
+        ix = max(0.0, min(x + w, f.origin.x + f.size.width) - max(x, f.origin.x))
+        iy = max(0.0, min(y + h, f.origin.y + f.size.height) - max(y, f.origin.y))
+        if ix * iy > best_area:
+            best, best_area = s, ix * iy
+    return best or screens[0]
+
+
+def next_window_rect(rect_ns, screens=None):
+    """给定窗口的 NS 矩形, 返回 (目标屏, 新 NS 矩形)。纯函数, 便于离线自检。"""
+    screens = screens or screen_targets()
+    if len(screens) < 2:
+        return None, None
+    x, y, w, h = rect_ns
+    cur = screen_of_rect(rect_ns, screens)
+    if cur is None:
+        return None, None
+    i = screens.index(cur)
+    tgt = screens[(i + 1) % len(screens)]
+    cvf, tvf = cur.visibleFrame(), tgt.visibleFrame()
+    # 相对位置: 窗口在「可视区减去自身后的剩余空间」里的比例
+    rx = min(1.0, max(0.0, (x - cvf.origin.x) / max(1.0, cvf.size.width - w)))
+    ry = min(1.0, max(0.0, (y - cvf.origin.y) / max(1.0, cvf.size.height - h)))
+    nw = min(w, tvf.size.width)
+    nh = min(h, tvf.size.height)
+    tx = tvf.origin.x + rx * max(0.0, tvf.size.width - nw)
+    ty = tvf.origin.y + ry * max(0.0, tvf.size.height - nh)
+    return tgt, (tx, ty, nw, nh)
+
+
+def front_window():
+    """(前台 App, 活动窗口)；拿不到就是 (app, None)。"""
+    app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if app is None:
+        return None, None
+    axapp = AS.AXUIElementCreateApplication(app.processIdentifier())
+    win = _ax_get(axapp, "AXFocusedWindow") or _ax_get(axapp, "AXMainWindow")
+    return app, win
+
+
+def rotate_window(dry_run=False):
+    """把前台窗口移到物理顺序的下一块屏。返回 (ok, reason)。
+
+    规则: 单屏不动; 镜像屏算同一目标; 原生全屏跳过; 尺寸超出目标屏才缩小;
+    位置按「在可视区剩余空间里的相对比例」映射，并用 visibleFrame 避开 Dock/菜单栏。
+    """
+    screens = screen_targets()
+    if len(screens) < 2:
+        return False, "只有一块屏，不轮转"
+    app, win = front_window()
+    if win is None:
+        return False, "没有可移动的前台窗口"
+    if bool(_ax_get(win, "AXFullScreen")):
+        return False, "原生全屏窗口不轮转（会打断 Space）"
+    pv, sv = _ax_get(win, "AXPosition"), _ax_get(win, "AXSize")
+    if pv is None or sv is None:
+        return False, "窗口未开放位置/大小（AX 受限）"
+    ok, pt = AS.AXValueGetValue(pv, AS.kAXValueCGPointType, None)
+    if not ok:
+        return False, "读不到窗口位置"
+    ok, sz = AS.AXValueGetValue(sv, AS.kAXValueCGSizeType, None)
+    if not ok:
+        return False, "读不到窗口大小"
+
+    main_h = primary_height()
+    w, h = float(sz.width), float(sz.height)
+    nx, ny = ax_to_ns_origin(float(pt.x), float(pt.y), h, main_h)
+    tgt, box = next_window_rect((nx, ny, w, h), screens)
+    if tgt is None or box is None:
+        return False, "找不到窗口所在屏"
+    tx, ty, nw, nh = box
+    ax_x, ax_y = ns_to_ax_origin(tx, ty, nh, main_h)
+    where = "「%s」（%d/%d）" % (tgt.localizedName() or "下一屏", screens.index(tgt) + 1, len(screens))
+    if dry_run:
+        return True, "将移到 " + where
+
+    e1 = _ax_set(win, "AXSize", AS.AXValueCreate(AS.kAXValueCGSizeType, (nw, nh)))
+    e2 = _ax_set(win, "AXPosition", AS.AXValueCreate(AS.kAXValueCGPointType, (ax_x, ax_y)))
+    if e1 != 0 or e2 != 0:
+        return False, "系统拒绝修改窗口（AX %d/%d）" % (e1, e2)
+    return True, "移到 " + where
+
+
 def sym_image(name, size=18.0):
     img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
     if img is None:
@@ -253,6 +392,17 @@ class Bar:
         self.panel.setContentView_(self.view)
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.6, self, "tick:", None, True)
+        # 屏幕数量/排列变化时要重建工具栏，否则跨屏按钮不会跟着出现或消失
+        self._screen_obs = None
+        try:
+            from Foundation import NSNotificationCenter, NSOperationQueue
+            self._screen_obs = NSNotificationCenter.defaultCenter(
+            ).addObserverForName_object_queue_usingBlock_(
+                "NSApplicationDidChangeScreenParametersNotification", None,
+                NSOperationQueue.mainQueue(),
+                lambda _note: self._on_screens_changed())
+        except Exception as exc:
+            self.log("screen observer failed: %r" % (exc,))
 
     # ---------------------------------------------------------------- 状态
     def load(self):
@@ -290,6 +440,13 @@ class Bar:
     def close(self):
         self._closed = True
         try:
+            if self._screen_obs is not None:
+                from Foundation import NSNotificationCenter
+                NSNotificationCenter.defaultCenter().removeObserver_(self._screen_obs)
+                self._screen_obs = None
+        except Exception:
+            pass
+        try:
             self.timer.invalidate()
         except Exception:
             pass
@@ -309,6 +466,24 @@ class Bar:
             return
         self.sig = sig
         self.rebuild(app, items)
+
+    def _on_screens_changed(self):
+        if self._closed:
+            self._log_screen_change()
+            return
+        self.sig = None
+        if self.visible:
+            if self.docked:
+                self.build_tab()
+            else:
+                app, items = front_toolbar()
+                self.rebuild(app, items)
+
+    def _log_screen_change(self):
+        try:
+            self.log("screens changed: %d" % len(screen_targets()))
+        except Exception:
+            pass
 
     def _style(self):
         layer = self.view.layer()
@@ -438,6 +613,12 @@ class Bar:
         x += 6
         self._sep(x)
         x += 9
+        targets = screen_targets()
+        if len(targets) >= 2:
+            self._btn(x, (BAR_H - BTN) / 2, BTN, BTN, symbol="rectangle.on.rectangle",
+                      tooltip="移到下一块屏（共 %d 块）" % len(targets),
+                      action="rotateWindow:")
+            x += BTN + GAP
         for si, (sym, code, tip) in enumerate(SYSTEM_GROUP):
             b = self._btn(x, (BAR_H - BTN) / 2, BTN, BTN, symbol=sym, tooltip=tip, action="systemKey:")
             b.setTag_(si)
@@ -522,6 +703,11 @@ class Bar:
         self.log("press %s -> %d" % (sender.toolTip(), err))
         self.sig = None
 
+    def rotateWindow_(self, _sender):
+        ok, why = rotate_window()
+        self.log("rotate window: %s (%s)" % (ok, why))
+        self.sig = None
+
     def systemKey_(self, sender):
         sys_key(SYSTEM_GROUP[sender.tag()][1])
 
@@ -570,6 +756,7 @@ def run_standalone():
 
 def selftest():
     """无 UI 自检：符号映射、状态持久化、AX 读取不崩。"""
+    from AppKit import NSMakeRect
     NSApplication.sharedApplication()
     assert symbol_for("返回") == "chevron.left"
     assert symbol_for("Share") == "square.and.arrow.up"
@@ -590,6 +777,45 @@ def selftest():
 
     app, items = front_toolbar()
     print("ok ax probe: app=%r items=%d" % (app.localizedName() if app else None, len(items)))
+
+    targets = screen_targets()
+    print("ok screens: %d 个目标 %r" % (len(targets),
+          [(round(s.frame().origin.x), round(s.frame().origin.y)) for s in targets]))
+    assert targets == sorted(targets, key=lambda s: (round(s.frame().origin.x),
+                                                     -round(s.frame().origin.y)))
+    mh = primary_height() or 1000.0
+    axx, axy = ax_to_ns_origin(100, 200, 300, mh)
+    assert abs(ns_to_ax_origin(axx, axy, 300, mh)[1] - 200) < 1e-6
+    print("ok 坐标换算往返")
+
+    class _Fake:
+        def __init__(self, x, y, w, h, name="fake"):
+            self._r, self._n = NSMakeRect(x, y, w, h), name
+
+        def frame(self):
+            return self._r
+
+        def visibleFrame(self):
+            return self._r
+
+        def localizedName(self):
+            return self._n
+
+    a = _Fake(0, 0, 1920, 1080, "A")
+    b = _Fake(1920, 0, 1280, 800, "B")
+    tgt, box = next_window_rect((100, 100, 800, 600), [a, b])
+    assert tgt is b, tgt
+    assert 1920 <= box[0] <= 1920 + 1280 - 800 + 1 and 0 <= box[1] <= 200 + 1, box
+    assert (box[2], box[3]) == (800, 600)
+    # 超出目标屏才缩小
+    tgt, box = next_window_rect((0, 0, 1500, 1000), [a, b])
+    assert (box[2], box[3]) == (1280, 800) and box[0] == 1920 and box[1] == 0, box
+    # 从 B 回到 A（循环）
+    tgt, box = next_window_rect((2000, 100, 400, 300), [a, b])
+    assert tgt is a and box[0] >= 0 and box[1] >= 0
+    print("ok 跨屏轮转: 顺序/尺寸收敛/相对位置/循环")
+    ok, why = rotate_window(dry_run=True)
+    print("ok rotate dry-run: %s (%s)" % (ok, why))
     bar.close()
     again.close()
     print("SELFTEST OK")
