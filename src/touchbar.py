@@ -136,6 +136,23 @@ def front_toolbar():
     return app, []
 
 
+def screen_for_rect(x, y, w, h):
+    """返回与给定矩形重叠面积最大的屏幕；都不重叠时退回鼠标所在屏。"""
+    best, best_area = None, 0.0
+    for s in NSScreen.screens():
+        f = s.frame()
+        ix = max(0.0, min(x + w, f.origin.x + f.size.width) - max(x, f.origin.x))
+        iy = max(0.0, min(y + h, f.origin.y + f.size.height) - max(y, f.origin.y))
+        if ix * iy > best_area:
+            best, best_area = s, ix * iy
+    return best or screen_under_mouse()
+
+
+def centered_origin_x(x, old_w, new_w):
+    """宽度变化时保持窗口中心不动，返回新的左边缘 x。"""
+    return x + (old_w - new_w) / 2.0
+
+
 def screen_under_mouse():
     p = NSEvent.mouseLocation()
     for s in NSScreen.screens():
@@ -566,6 +583,7 @@ class Bar:
     def rebuild(self, app, items):
         if self._closed:
             return
+        old_frame = self.panel.frame()
         for v in list(self.view.subviews()):
             v.removeFromSuperview()
         self.items = items
@@ -636,12 +654,20 @@ class Bar:
         self.panel.setFrame_display_(NSMakeRect(0, 0, w, BAR_H), True)
         self.view.setFrame_(NSMakeRect(0, 0, w, BAR_H))
         self._style()
+        if not self.docked and (self.pos[0] or self.pos[1]):
+            cx = self.pos[0] + old_frame.size.width / 2.0
+            self.pos = (centered_origin_x(cx - old_frame.size.width / 2.0,
+                                          old_frame.size.width, w), self.pos[1])
+        elif not self.docked and self.visible:
+            self.pos = (centered_origin_x(old_frame.origin.x, old_frame.size.width, w),
+                        old_frame.origin.y)
         self.restore_position(w)
         if not self.visible:
             self.panel.orderOut_(None)
 
     def restore_position(self, w):
-        scr = screen_under_mouse().visibleFrame()
+        f = self.panel.frame()
+        scr = screen_for_rect(f.origin.x, f.origin.y, w, BAR_H).visibleFrame()
         x, y = self.pos
         if not x and not y:
             x = scr.origin.x + (scr.size.width - w) / 2
@@ -800,6 +826,12 @@ def selftest():
 
         def localizedName(self):
             return self._n
+
+    # 宽度变化围绕中心
+    assert centered_origin_x(100, 400, 400) == 100
+    assert centered_origin_x(100, 400, 500) == 50
+    assert centered_origin_x(100, 500, 400) == 150
+    print("ok 宽度变化保持中心")
 
     a = _Fake(0, 0, 1920, 1080, "A")
     b = _Fake(1920, 0, 1280, 800, "B")
