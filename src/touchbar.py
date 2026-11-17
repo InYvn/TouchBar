@@ -739,6 +739,9 @@ class Bar:
 
 
 # ---------------------------------------------------------------- 独立 App
+_KEEP = []
+
+
 def run_standalone():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -774,7 +777,7 @@ def run_standalone():
     handler = _Menu()
     for item in menu.itemArray():
         item.setTarget_(handler)
-    app._handler = handler
+    _KEEP.append(handler)
 
     bar.show()
     app.run()
